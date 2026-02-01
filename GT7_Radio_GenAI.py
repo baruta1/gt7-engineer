@@ -445,11 +445,25 @@ async def play_line(vc, text, cache_tag, is_automated=True):
         return
 
     # Use the global voice_conn which gets refreshed on gateway reconnect
-    vc = voice_conn if voice_conn else vc
+    if voice_conn and voice_conn.is_connected():
+        vc = voice_conn
 
-    if not vc or not vc.is_connected():
-        print(f"⚠️ play_line skipped ({cache_tag}): vc not connected")
+    if not vc:
+        print(f"⚠️ play_line skipped ({cache_tag}): no vc available")
         return
+
+    if not vc.is_connected():
+        # Try to reconnect on the spot
+        print(f"⚠️ play_line: vc not connected, attempting reconnect for '{cache_tag}'...")
+        try:
+            ch = vc.channel
+            vc = await ch.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
+            voice_conn = vc
+            await asyncio.sleep(0.5)
+            print(f"✅ play_line: reconnected for '{cache_tag}'")
+        except Exception as e:
+            print(f"⚠️ play_line skipped ({cache_tag}): reconnect failed - {e}")
+            return
 
     try:
         print(f"🎙️ play_line: generating TTS for '{cache_tag}'...")
@@ -923,7 +937,9 @@ async def handle_engineer_flow(vc, driver_user_id):
                 voice_conn = vc
                 last_voice_refresh = now
                 gateway_needs_voice_refresh = False
-                print("✅ Voice refreshed after gateway issue")
+                # Wait for connection to fully establish
+                await asyncio.sleep(1.0)
+                print(f"✅ Voice refreshed after gateway issue (connected={vc.is_connected()})")
             except Exception as e:
                 print(f"⚠️ Voice refresh failed: {e}")
                 gateway_needs_voice_refresh = False
