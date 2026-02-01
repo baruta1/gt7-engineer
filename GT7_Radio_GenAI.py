@@ -30,6 +30,22 @@ import subprocess
 from pathlib import Path
 
 import logging
+
+# Flag to detect gateway issues
+gateway_needs_voice_refresh = False
+
+class GatewayWarningHandler(logging.Handler):
+    """Detect gateway 'stopped responding' warnings and flag for voice refresh."""
+    def emit(self, record):
+        global gateway_needs_voice_refresh
+        if "stopped responding" in record.getMessage():
+            print("⚠️ Gateway issue detected - flagging for voice refresh")
+            gateway_needs_voice_refresh = True
+
+# Add our handler to the discord.gateway logger
+gateway_logger = logging.getLogger("discord.gateway")
+gateway_logger.addHandler(GatewayWarningHandler())
+
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.ext.voice_recv").setLevel(logging.WARNING)
 logging.getLogger("paramiko").setLevel(logging.WARNING)
@@ -893,12 +909,29 @@ async def handle_engineer_flow(vc, driver_user_id):
             purge_old_recordings()
         loop_count += 1
 
-        # Periodic voice refresh to prevent stale connections
-        global last_voice_refresh
+        # Check for gateway issues (detected via log handler)
+        global gateway_needs_voice_refresh, last_voice_refresh
         now = time.time()
-        if (race_started
-            and not vc.is_playing()
-            and (now - last_voice_refresh) > VOICE_REFRESH_INTERVAL):
+
+        if gateway_needs_voice_refresh and not vc.is_playing():
+            print("🔄 Refreshing voice after gateway issue...")
+            try:
+                ch = vc.channel
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5)
+                vc = await ch.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
+                voice_conn = vc
+                last_voice_refresh = now
+                gateway_needs_voice_refresh = False
+                print("✅ Voice refreshed after gateway issue")
+            except Exception as e:
+                print(f"⚠️ Voice refresh failed: {e}")
+                gateway_needs_voice_refresh = False
+
+        # Periodic voice refresh as backup
+        elif (race_started
+              and not vc.is_playing()
+              and (now - last_voice_refresh) > VOICE_REFRESH_INTERVAL):
             print("🔄 Periodic voice refresh...")
             try:
                 ch = vc.channel
