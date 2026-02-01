@@ -27,6 +27,7 @@ from faster_whisper import WhisperModel
 import os
 import time
 import subprocess
+import random
 from pathlib import Path
 
 import logging
@@ -181,8 +182,9 @@ last_lap_delta_call = 0           # Cooldown for lap delta announcements
 consecutive_slow_laps = 0         # Track if driver is struggling
 
 # ─── NEW: Incident Detection ───────────────────────────────
-last_incident_call = 0            # Cooldown for incident announcements
-prev_g_forces = None              # Track previous G-forces for delta
+last_minor_incident = 0           # Cooldown for minor incidents (wobbles)
+last_major_incident = 0           # Cooldown for major incidents (hits/crashes)
+prev_speed = 0                    # Track speed for crash detection
 
 # ─── NEW: Driving Style Analysis ───────────────────────────
 tcs_activations = 0               # Count TCS activations per lap
@@ -806,55 +808,101 @@ async def maybe_handle_lap_delta(vc, latest):
         await play_line(vc, msg, "lap_delta")
 
 # ─── NEW: Incident Detection ───────────────────────────────
+# Pre-written responses for INSTANT playback (no ChatGPT delay)
+
+WOBBLE_RESPONSES = [
+    "Steady!",
+    "Watch it!",
+    "Keep it together!",
+    "Easy now!",
+    "Hold it steady!",
+]
+
+MEDIUM_HIT_RESPONSES = [
+    "You okay? Stay focused!",
+    "That was a hit! Keep on it!",
+    "Contact! You alright?",
+    "Bit of a knock there, stay with it!",
+    "Ooh, that was close! Focus!",
+]
+
+BIG_CRASH_RESPONSES = [
+    "Are you okay?! Talk to me!",
+    "Big impact! Are you alright?!",
+    "That was a big one! You okay?!",
+    "Bloody hell! Are you hurt?!",
+    "Major contact! Respond if you're okay!",
+]
+
+prev_speed = 0  # Track speed for crash detection
+last_minor_incident = 0  # Separate cooldown for minor incidents
+last_major_incident = 0  # Separate cooldown for major incidents
+
 async def maybe_handle_incident(vc, latest):
-    """Detect big impacts or slides using G-force data."""
-    global last_incident_call, prev_g_forces
+    """Detect impacts with tiered severity - instant responses, no ChatGPT delay."""
+    global last_minor_incident, last_major_incident, prev_speed
 
     if not latest or not race_started:
         return
 
-    # Get G-force data (surge = forward/back, sway = left/right, heave = up/down)
+    # Get G-force data
     surge = getattr(latest, 'surge', None)
     sway = getattr(latest, 'sway', None)
-    heave = getattr(latest, 'heave', None)
+    current_speed = latest.speed_mps * 3.6 if latest.speed_mps else 0
 
     # Skip if motion data not available
     if surge is None or sway is None:
+        prev_speed = current_speed
         return
 
-    # 3 minute cooldown between incident calls (avoid spam)
-    if time.time() - last_incident_call < 180:
+    now = time.time()
+
+    # Calculate speed drop (big drop = likely crash)
+    speed_drop = prev_speed - current_speed if prev_speed > 0 else 0
+    prev_speed = current_speed
+
+    # Detect severity levels
+    lateral_g = abs(sway)
+    decel_g = abs(surge)
+
+    # BIG CRASH: High G + massive speed drop OR extreme G-forces
+    # Respond with concern - 2 min cooldown
+    is_big_crash = (
+        (lateral_g > 5.0) or
+        (decel_g > 5.0 and latest.brake < 100) or
+        (speed_drop > 100 and (lateral_g > 3.0 or decel_g > 3.0))  # Lost 100+ kph with G-forces
+    )
+
+    if is_big_crash and (now - last_major_incident) > 120:
+        last_major_incident = now
+        last_minor_incident = now  # Also reset minor cooldown
+        msg = random.choice(BIG_CRASH_RESPONSES)
+        print(f"💥 BIG CRASH detected! G: lateral={lateral_g:.1f}, decel={decel_g:.1f}, speed_drop={speed_drop:.0f}kph")
+        await play_line(vc, msg, "incident_crash", is_automated=True)
         return
 
-    # Calculate total G-force magnitude
-    total_g = (surge**2 + sway**2) ** 0.5
+    # MEDIUM HIT: Significant impact - 90 sec cooldown
+    is_medium_hit = (
+        (lateral_g > 3.5) or
+        (decel_g > 4.0 and latest.brake < 150) or
+        (speed_drop > 50 and lateral_g > 2.5)
+    )
 
-    # Detect significant lateral G (big slide or impact)
-    # Higher thresholds to only catch real incidents, not normal racing
-    if abs(sway) > 3.5:  # Big lateral hit or slide (raised from 2.5)
-        last_incident_call = time.time()
-        prompt = get_main_prompt() + (
-            f" The car just had a significant lateral load - possibly a slide or contact. "
-            f"Quick check-in under 8 words. Be supportive, not alarming."
-        )
-        msg = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": prompt}]
-        ).choices[0].message.content
-        await play_line(vc, msg, "incident_lateral")
-    elif abs(surge) > 4.0:  # Big decel - hard braking or impact (raised from 3.0)
-        # Only flag if unexpected (could be normal hard braking zone)
-        if latest.brake < 150:  # Not heavy braking, so likely an impact
-            last_incident_call = time.time()
-            prompt = get_main_prompt() + (
-                f" Car experienced sudden deceleration without heavy braking - possible contact. "
-                f"Brief check-in under 8 words."
-            )
-            msg = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "system", "content": prompt}]
-            ).choices[0].message.content
-            await play_line(vc, msg, "incident_impact")
+    if is_medium_hit and (now - last_major_incident) > 90:
+        last_major_incident = now
+        msg = random.choice(MEDIUM_HIT_RESPONSES)
+        print(f"💢 Medium hit detected! G: lateral={lateral_g:.1f}, decel={decel_g:.1f}, speed_drop={speed_drop:.0f}kph")
+        await play_line(vc, msg, "incident_hit", is_automated=True)
+        return
+
+    # MINOR WOBBLE: Small slide/contact - 60 sec cooldown
+    is_wobble = (lateral_g > 2.5) or (decel_g > 3.0 and latest.brake < 150)
+
+    if is_wobble and (now - last_minor_incident) > 60:
+        last_minor_incident = now
+        msg = random.choice(WOBBLE_RESPONSES)
+        print(f"〰️ Wobble detected! G: lateral={lateral_g:.1f}, decel={decel_g:.1f}")
+        await play_line(vc, msg, "incident_wobble", is_automated=True)
 
 # ─── NEW: Driving Style Analysis ───────────────────────────
 async def update_driving_style_counters(latest):
@@ -1092,7 +1140,7 @@ async def handle_engineer_flow(vc, driver_user_id):
             # Reset new tracking variables
             global initial_tire_radius, tire_wear_announced, last_tire_wear_call
             global last_lap_delta_call, consecutive_slow_laps
-            global last_incident_call, prev_g_forces
+            global last_minor_incident, last_major_incident, prev_speed
             global tcs_activations, asm_activations, wheelspin_events, lockup_events
             global last_driving_style_call, prev_tcs_state, prev_asm_state
 
@@ -1101,8 +1149,9 @@ async def handle_engineer_flow(vc, driver_user_id):
             last_tire_wear_call = 0
             last_lap_delta_call = 0
             consecutive_slow_laps = 0
-            last_incident_call = 0
-            prev_g_forces = None
+            last_minor_incident = 0
+            last_major_incident = 0
+            prev_speed = 0
             tcs_activations = asm_activations = wheelspin_events = lockup_events = 0
             last_driving_style_call = 0
             prev_tcs_state = prev_asm_state = False
