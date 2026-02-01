@@ -1,0 +1,43 @@
+# Environment and secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+.Python
+pip-log.txt
+
+# TTS Models (download separately - see README)
+piper_models/
+kokoro_models/
+tts/
+
+# Logs
+*.log
+engineer_log.txt
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Windows/Dropbox extended attributes
+*:Zone.Identifier
+*:com.dropbox.attrs
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# Temporary files
+*.tmp
+*.temp

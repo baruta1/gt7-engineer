@@ -2,12 +2,10 @@
 import os
 import sys
 import time
-import tkinter as tk
-from tkinter import messagebox
 from pathlib import Path
 
+# Import telemetry BEFORE GT7_Radio_GenAI (which applies nest_asyncio)
 from telemetry_server import TelemetryServer
-import GT7_Radio_GenAI  # your existing module
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
@@ -29,39 +27,48 @@ def set_working_directory():
 
 
 def connect_telemetry():
-    tel = TelemetryServer()
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        tel = TelemetryServer()
         try:
             tel.start()
-            time.sleep(2)  # give it a moment to receive packets
-            if tel.get_latest() is not None:
-                print(f"✅ Telemetry connected on attempt {attempt}", flush=True)
-                return tel
-            raise RuntimeError("no packets yet")
+            # Wait up to 5 seconds for telemetry data
+            for _ in range(10):
+                time.sleep(0.5)
+                if tel.get_latest() is not None:
+                    print(f"✅ Telemetry connected on attempt {attempt}", flush=True)
+                    return tel
+            print(f"⚠️  Telemetry attempt {attempt}: no packets received", flush=True)
+            tel.stop()
+            time.sleep(DELAY_BETWEEN)
         except Exception as e:
             print(f"⚠️  Telemetry attempt {attempt} failed: {e}", flush=True)
+            try:
+                tel.stop()
+            except:
+                pass
             time.sleep(DELAY_BETWEEN)
     return None
 
 
-def show_error_popup():
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showerror(
-        "GT7 Engineer",
-        "❌ Couldn’t find your PS5 telemetry after 3 tries.\n"
-        "Please check your Wi-Fi or restart your PS5."
-    )
+def show_error_message():
+    print("=" * 50)
+    print("❌ ERROR: Couldn't find your PS5 telemetry after 3 tries.")
+    print("Please check:")
+    print("  - Your PS5 is on and GT7 is running")
+    print("  - PS5 and computer are on the same network")
+    print("  - Try restarting your PS5")
+    print("=" * 50)
 
 
 def main():
     set_working_directory()
     tel = connect_telemetry()
     if not tel:
-        show_error_popup()
+        show_error_message()
         sys.exit(1)
 
-    # Start the main application
+    # Import AFTER telemetry is connected (nest_asyncio applied in this module)
+    import GT7_Radio_GenAI
     GT7_Radio_GenAI.run_with_telemetry(tel)
 
 

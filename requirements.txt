@@ -3,8 +3,11 @@ discord-ext-voice-recv
 faster-whisper
 openai
 pydub
-TTS
-telemetry-server-py  # or however that’s published
+edge-tts
 python-dotenv
 pillow
 gt-telem
+nest-asyncio
+aiohttp
+async-timeout
+inflect

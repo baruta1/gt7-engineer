@@ -23,14 +23,24 @@ env["PYTHONIOENCODING"] = "utf-8"
 
 def kill_port_users(port):
     try:
-        # Find the PID using the port
-        result = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True)
-        lines = result.decode().splitlines()
-        pids = {re.split(r"\s+", line.strip())[-1] for line in lines}
-        
-        for pid in pids:
-            print(f"Killing process using port {port}: PID {pid}")
-            subprocess.run(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == 'win32':
+            # Windows: use netstat and taskkill
+            result = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True)
+            lines = result.decode().splitlines()
+            pids = {re.split(r"\s+", line.strip())[-1] for line in lines}
+
+            for pid in pids:
+                print(f"Killing process using port {port}: PID {pid}")
+                subprocess.run(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # Linux/WSL: use lsof and kill
+            result = subprocess.check_output(f'lsof -ti:{port}', shell=True)
+            pids = result.decode().strip().split('\n')
+
+            for pid in pids:
+                if pid:
+                    print(f"Killing process using port {port}: PID {pid}")
+                    subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         print(f"No process found using port {port} — good to go.")
         

@@ -1,10 +1,11 @@
 import time
 import threading
 from gt_telem import TurismoClient
-from gt_telem.errors.playstation_errors import PlayStationNotFoundError, PlayStatonOnStandbyError
+from gt_telem.errors.playstation_errors import PlayStationNotFoundError, PlayStationOnStandbyError
 
 class TelemetryServer:
-    def __init__(self):
+    def __init__(self, ps5_ip="192.168.1.108"):
+        self.ps5_ip = ps5_ip
         self.tc = None
         self.latest = None
         self.running = False
@@ -18,10 +19,10 @@ class TelemetryServer:
 
     def start(self):
         try:
-            self.tc = TurismoClient()
+            self.tc = TurismoClient(ps_ip=self.ps5_ip)
             self.tc.start()
-            print("✅ Telemetry started.")
-        except PlayStatonOnStandbyError:
+            print(f"✅ Telemetry started (connected to {self.ps5_ip}).")
+        except PlayStationOnStandbyError:
             print("❗ PS5 is asleep—wake it up.")
             return
         except PlayStationNotFoundError:
@@ -35,7 +36,10 @@ class TelemetryServer:
     def stop(self):
         self.running = False
         if self.tc:
-            self.tc.stop()
+            try:
+                self.tc.stop()
+            except Exception:
+                pass
         print("🛑 Telemetry stopped.")
 
     def get_latest(self):
