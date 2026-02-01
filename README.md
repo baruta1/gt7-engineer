@@ -227,7 +227,6 @@ Say "Radio" followed by your question:
 - **"Radio, tire wear"** - Tire condition report
 - **"Radio, what position am I?"** - Current race position
 - **"Radio, how am I doing?"** - Overall performance summary
-- **"Radio, gap to leader?"** - Time gap information
 
 ---
 
