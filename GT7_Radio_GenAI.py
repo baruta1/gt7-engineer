@@ -879,21 +879,22 @@ async def maybe_handle_incident(vc, latest):
     speed_drop = max_speed - current_avg_speed
 
     # STRICT SPIN DETECTION - must have BOTH rotation AND speed loss:
-    # 1. Rotated >120° AND lost >30 kph AND was going >50 kph = real spin
-    # 2. Rotated >150° (almost backwards) = definite spin regardless
+    # Rotated >120° AND lost >30 kph AND was going >50 kph = real spin
     is_spin = (
-        (rotation_change > 120 and speed_drop > 30 and max_speed > 50) or  # Big rotation + speed loss
+        (rotation_change > 120 and speed_drop > 30 and max_speed > 50) or
         (rotation_change > 150)  # Almost backwards = definite spin
     )
 
-    # STRICT CRASH DETECTION - must be nearly stopped with rotation:
-    # Nearly stopped (<10 kph) after high speed (>100 kph) with rotation (>60°)
+    # CRASH DETECTION - nearly stopped after high speed:
+    # 1. Massive speed drop (>150 kph) to near-stop (<25 kph) = definite crash
+    # 2. Was >100, now <20, rotation >50°, not braking hard
     is_crash = (
-        max_speed > 100 and current_avg_speed < 10 and rotation_change > 60 and latest.brake < 80
+        (speed_drop > 150 and current_avg_speed < 25) or  # Massive decel = crash
+        (max_speed > 100 and current_avg_speed < 20 and rotation_change > 50 and latest.brake < 80)
     )
 
-    # Debug logging - only log significant events
-    if rotation_change > 60 or (speed_drop > 50 and rotation_change > 30):
+    # Debug logging - only log potential incidents
+    if (speed_drop > 100 and current_avg_speed < 30) or rotation_change > 80:
         print(f"🔍 Incident check: rot_change={rotation_change:.0f}°, spin_rate={spin_rate:.0f}°/s, speed_drop={speed_drop:.0f}, speed={current_speed:.0f}")
 
     if is_spin or is_crash:
