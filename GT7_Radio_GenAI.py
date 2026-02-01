@@ -42,25 +42,27 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 p = inflect.engine()
 
 
-# Driver Name
-driver_name = "Driver"
+# Driver Name - can be set via !setdriver command or DRIVER_NAME in .env
+driver_name = ""
 TRIGGER_PHRASE = "radio|really|video"
 
-# MAIN PROMPT - Irish/British female race engineer personality
-MAIN_PROMPT = (
-    f"You are Aoife, a sharp and witty Irish-British female Formula 1 race engineer for {driver_name}. "
-    f"You're his trusted mate on the pit wall - quick with a joke but deadly serious when it matters. "
-    f"You have a warm Dublin accent in your phrasing, occasionally dropping in Irish expressions like 'grand', 'brilliant', 'right so'. "
-    f"You're supremely competent - you know your data cold and give precise, actionable advice. "
-    f"You keep messages SHORT and punchy - this is racing, not a chat. Max 1-2 sentences. "
-    f"You're supportive but not sycophantic - if {driver_name} messes up, you'll note it with dry humor then move on. "
-    f"CRITICAL RULES: "
-    f"- ONLY discuss racing, car setup, strategy, lap times, tyres, fuel, weather, positions. "
-    f"- NEVER discuss anything unrelated to the current race or motorsport. "
-    f"- If asked about non-racing topics, deflect with humor and refocus: 'Focus on the race, we'll chat after!' "
-    f"- NO emojis, NO symbols, NO asterisks. Just clean spoken text. "
-    f"- Always end with proper punctuation. Be concise and complete."
-)
+def get_main_prompt():
+    """Generate the main prompt with current driver name."""
+    name = driver_name if driver_name else "Driver"
+    return (
+        f"You are Aoife, a sharp and witty Irish-British female Formula 1 race engineer for {name}. "
+        f"You're their trusted mate on the pit wall - quick with a joke but deadly serious when it matters. "
+        f"You have a warm Dublin accent in your phrasing, occasionally dropping in Irish expressions like 'grand', 'brilliant', 'right so'. "
+        f"You're supremely competent - you know your data cold and give precise, actionable advice. "
+        f"You keep messages SHORT and punchy - this is racing, not a chat. Max 1-2 sentences. "
+        f"You're supportive but not sycophantic - if {name} messes up, you'll note it with dry humor then move on. "
+        f"CRITICAL RULES: "
+        f"- ONLY discuss racing, car setup, strategy, lap times, tyres, fuel, weather, positions. "
+        f"- NEVER discuss anything unrelated to the current race or motorsport. "
+        f"- If asked about non-racing topics, deflect with humor and refocus: 'Focus on the race, we'll chat after!' "
+        f"- NO emojis, NO symbols, NO asterisks. Just clean spoken text. "
+        f"- Always end with proper punctuation. Be concise and complete."
+    )
 
 
 class QuietFFmpegPCMAudio(FFmpegPCMAudio):
@@ -120,6 +122,12 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 AUTO_CHANNEL_ID = os.getenv("AUTO_CHANNEL_ID")
 DRIVER_USER_ID = os.getenv("DRIVER_USER_ID")
+
+# Load driver name from .env if set
+driver_name = os.getenv("DRIVER_NAME", "")
+if driver_name:
+    print(f"👤 Driver name loaded from .env: {driver_name}")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 #model = whisper.load_model("small")
@@ -487,7 +495,7 @@ async def maybe_handle_overtake(vc, latest):
             # build your prompt
             flavour = "gained a place" if curr_pos < prev_position else "lost a place"
             stats = latest_telemetry_data()
-            prompt =MAIN_PROMPT+ (f" The driver just {flavour} "
+            prompt =get_main_prompt()+ (f" The driver just {flavour} "
                 f"(from P{prev_position} to P{curr_pos}). In 10 words or fewer, quip about it. Stats for the car are: {stats}"
                 f"Be sure to also mention what place they are now in, like P one (please leave a space between the P and the number of their place). Keep things short, no more than 10 words total!"
             )
@@ -535,28 +543,28 @@ async def maybe_handle_lap_update(vc, latest):
 
     if total > 0 and lap > total:
         # Race finished (crossed line on final lap)
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
             f"The race just FINISHED! Congratulate the driver. "
             f"Give a super-short celebratory message about their final position."
         )
     elif total > 0 and lap == total:
         # LAST LAP - make it clear!
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
             f"This is the FINAL LAP! Lap {lap} of {total}. "
             f"Give an urgent, short message - push to the end! Mention it's the last lap."
         )
     elif total > 0 and lap == total - 1:
         # Second to last lap
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
             f"Lap {lap} of {total} - just ONE lap to go after this! "
             f"Give a short update, mention there's one lap remaining."
         )
     else:
         # Normal lap update
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
             f"We're on lap {lap} of {total} ({laps_remaining} laps remaining). "
             f"Give a one or two sentence update."
@@ -624,7 +632,7 @@ async def maybe_handle_tire_wear(vc, latest):
                 else:
                     severity = "starting to go off"
 
-                prompt = MAIN_PROMPT + (
+                prompt = get_main_prompt() + (
                     f" The {tire_names[worst_tire]} tyre is {severity} - about {int(max_wear)}% worn. "
                     f"Give a very brief (under 12 words) update about tyre condition. "
                     f"Be practical - should they push or conserve?"
@@ -670,7 +678,7 @@ async def maybe_handle_lap_delta(vc, latest):
         return
     elif delta_ms < 500:  # Within 0.5s of best - good lap!
         consecutive_slow_laps = 0
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" Driver just did a lap only {delta_sec:.1f} seconds off their best. "
             f"Give quick encouragement (under 10 words). They're on pace!"
         )
@@ -682,7 +690,7 @@ async def maybe_handle_lap_delta(vc, latest):
         consecutive_slow_laps += 1
         # Only mention if it's not a pattern (avoid nagging)
         if consecutive_slow_laps == 1:
-            prompt = MAIN_PROMPT + (
+            prompt = get_main_prompt() + (
                 f" Driver's last lap was {delta_sec:.1f} seconds off their best. "
                 f"Something might have happened. Quick check-in (under 10 words), "
                 f"but don't be negative - maybe traffic or a moment."
@@ -726,7 +734,7 @@ async def maybe_handle_incident(vc, latest):
     # Thresholds tuned for notable events only
     if abs(sway) > 2.5:  # Big lateral hit or slide
         last_incident_call = time.time()
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" The car just had a significant lateral load - possibly a slide or contact. "
             f"Quick check-in under 8 words. Be supportive, not alarming."
         )
@@ -739,7 +747,7 @@ async def maybe_handle_incident(vc, latest):
         # Only flag if unexpected (could be normal hard braking zone)
         if latest.brake < 200:  # Not heavy braking, so likely an impact
             last_incident_call = time.time()
-            prompt = MAIN_PROMPT + (
+            prompt = get_main_prompt() + (
                 f" Car experienced sudden deceleration without heavy braking - possible contact. "
                 f"Brief check-in under 8 words."
             )
@@ -815,7 +823,7 @@ async def maybe_handle_driving_style(vc, latest):
     msg = None
 
     if tcs_activations > 15:
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" TCS activated {tcs_activations} times last lap. "
             f"Brief driving tip under 12 words - maybe ease throttle on exits."
         )
@@ -824,7 +832,7 @@ async def maybe_handle_driving_style(vc, latest):
             messages=[{"role": "system", "content": prompt}]
         ).choices[0].message.content
     elif lockup_events > 8:
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" Detected {lockup_events} possible lockups last lap. "
             f"Brief tip under 12 words about braking."
         )
@@ -833,7 +841,7 @@ async def maybe_handle_driving_style(vc, latest):
             messages=[{"role": "system", "content": prompt}]
         ).choices[0].message.content
     elif wheelspin_events > 20:
-        prompt = MAIN_PROMPT + (
+        prompt = get_main_prompt() + (
             f" Lots of wheelspin detected ({wheelspin_events} events). "
             f"Brief throttle management tip under 12 words."
         )
@@ -1040,7 +1048,7 @@ async def handle_engineer_flow(vc, driver_user_id):
             print("🎤 Engineer Triggered Phrase:", query)
 
             stats = latest_telemetry_data()
-            system_prompt = MAIN_PROMPT + (
+            system_prompt = get_main_prompt() + (
                 f" The car stats now in the race are as follows: {stats} "
                 f"Answer the driver's question as if on the radio. Be as short and concise as possible! Time and speed matter. "
                 f"Their question: {query}"
@@ -1112,7 +1120,7 @@ async def maybe_announce_fuel(vc):
             announced_fuel_levels.add(level)
             
             stats = latest_telemetry_data()
-            system_prompt = MAIN_PROMPT + (
+            system_prompt = get_main_prompt() + (
                 f" The car's current data is: {stats}.  "
                 f"Fuel just dropped below {fuel_pct}%." 
                 f"Tell them their fuel level. Make a short quip, but actually give the driver the percentage of fuel they have left. Keep your response ultra short!"
@@ -1178,8 +1186,25 @@ async def engineer(ctx):
     
     
     # DO NOT play intro here; wait for on_race_start
-    await handle_engineer_flow(vc, driver_user_id)    
-    
+    await handle_engineer_flow(vc, driver_user_id)
+
+
+@bot.command()
+async def setdriver(ctx, *, name: str = None):
+    """Set the driver name. Usage: !setdriver YourName"""
+    global driver_name
+    if not name:
+        if driver_name:
+            await ctx.send(f"👤 Current driver: **{driver_name}**\nUse `!setdriver YourName` to change it.")
+        else:
+            await ctx.send("👤 No driver name set. Use `!setdriver YourName` to set it.")
+        return
+
+    driver_name = name.strip()
+    await ctx.send(f"👤 Driver name set to: **{driver_name}**")
+    print(f"👤 Driver name changed to: {driver_name}")
+
+
 def run_with_telemetry(telemetry_server):
     global telemetry
     telemetry = telemetry_server
