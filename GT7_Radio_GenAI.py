@@ -419,12 +419,18 @@ async def play_line(vc, text, cache_tag, is_automated=True):
     is_automated=True for unprompted messages (lap updates, position changes).
     These get the F1 alert sound at the start.
     """
+    global voice_conn
+
     if radio_paused:
         print(f"⚠️ play_line skipped ({cache_tag}): radio_paused=True")
         return
     if not race_started:
         print(f"⚠️ play_line skipped ({cache_tag}): race not started")
         return
+
+    # Use the global voice_conn which gets refreshed on gateway reconnect
+    vc = voice_conn if voice_conn else vc
+
     if not vc or not vc.is_connected():
         print(f"⚠️ play_line skipped ({cache_tag}): vc not connected")
         return
@@ -440,13 +446,18 @@ async def play_line(vc, text, cache_tag, is_automated=True):
             global last_rx_time
             last_rx_time = time.time()
 
+            # Re-check voice_conn in case it was refreshed during TTS generation
+            if voice_conn and voice_conn != vc and voice_conn.is_connected():
+                print(f"🔄 Using refreshed voice connection for '{cache_tag}'")
+                vc = voice_conn
+
             # Verify voice connection is still good before playing
             if not vc.is_connected():
                 print(f"⚠️ Voice disconnected before playing '{cache_tag}' - reconnecting...")
                 try:
                     ch = vc.channel
+                    await asyncio.sleep(0.5)  # Brief pause before reconnecting
                     vc = await ch.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
-                    global voice_conn
                     voice_conn = vc
                 except Exception as e:
                     print(f"❌ Reconnect failed: {e}")
@@ -1145,6 +1156,32 @@ async def maybe_announce_fuel(vc):
                 
             
 # ─── Bot Commands ──────────────────────────────────────
+
+@bot.event
+async def on_resumed():
+    """Handle Discord gateway reconnection - refresh voice connection."""
+    global voice_conn
+    print("🔄 Discord gateway resumed - checking voice connection...")
+
+    if voice_conn and voice_conn.channel:
+        try:
+            # Disconnect and reconnect to refresh the voice state
+            channel = voice_conn.channel
+            print(f"🔄 Refreshing voice connection to {channel.name}...")
+
+            try:
+                await voice_conn.disconnect(force=True)
+            except:
+                pass
+
+            await asyncio.sleep(1)  # Brief pause before reconnecting
+
+            vc = await channel.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
+            voice_conn = vc
+            print(f"✅ Voice connection refreshed to {channel.name}")
+        except Exception as e:
+            print(f"⚠️ Failed to refresh voice connection: {e}")
+
 
 @bot.event
 async def on_ready():
