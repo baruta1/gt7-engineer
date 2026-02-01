@@ -960,11 +960,10 @@ async def handle_engineer_flow(vc, driver_user_id):
                 print(f"⚠️ Voice refresh failed: {e}")
                 gateway_needs_voice_refresh = False
 
-        # Periodic voice refresh as backup
+        # Periodic voice refresh as backup (silent - gateway detection handles urgent cases)
         elif (race_started
               and not vc.is_playing()
               and (now - last_voice_refresh) > VOICE_REFRESH_INTERVAL):
-            print("🔄 Periodic voice refresh...")
             try:
                 ch = vc.channel
                 await vc.disconnect(force=True)
@@ -972,9 +971,8 @@ async def handle_engineer_flow(vc, driver_user_id):
                 vc = await ch.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
                 voice_conn = vc
                 last_voice_refresh = now
-                print("✅ Voice refreshed")
-            except Exception as e:
-                print(f"⚠️ Voice refresh failed: {e}")
+            except Exception:
+                pass  # Silent failure - gateway detection will catch real issues
 
         t = telemetry.get_latest()
 
@@ -1244,7 +1242,7 @@ async def maybe_announce_fuel(vc):
             
 # Track last voice reconnect time for periodic refresh
 last_voice_refresh = 0
-VOICE_REFRESH_INTERVAL = 45  # seconds
+VOICE_REFRESH_INTERVAL = 180  # 3 minutes - backup refresh, gateway detection handles urgent cases
 
 
 # ─── Bot Commands ──────────────────────────────────────
