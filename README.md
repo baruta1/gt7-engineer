@@ -134,12 +134,17 @@ Create a file called `.env` in the project folder with your credentials:
 DISCORD_TOKEN=your_discord_bot_token_here
 OPENAI_API_KEY=your_openai_api_key_here
 
+# Optional - your name (the engineer will use this when talking to you)
+DRIVER_NAME=YourName
+
 # Optional - for auto-joining voice channel on startup
 AUTO_CHANNEL_ID=your_voice_channel_id
 DRIVER_USER_ID=your_discord_user_id
 ```
 
-**Note:** The `AUTO_CHANNEL_ID` and `DRIVER_USER_ID` are optional. If you don't set them, you'll need to manually type `!engineer` in Discord to make the bot join your voice channel.
+**Note:** All the optional settings can be skipped:
+- Without `DRIVER_NAME`, the engineer calls you "Driver" (you can change it anytime with `!setdriver YourName`)
+- Without `AUTO_CHANNEL_ID` and `DRIVER_USER_ID`, type `!engineer` in Discord to make the bot join your voice channel
 
 ### Set your PS5 IP address
 
@@ -205,6 +210,14 @@ The engineer will automatically announce:
 - Fuel warnings (50%, 20%, 10% remaining)
 - Position changes
 - Incidents (spins, crashes)
+
+### Discord Commands
+
+Type these in any text channel:
+
+- **`!engineer`** - Make the bot join your voice channel
+- **`!setdriver YourName`** - Set your driver name (the engineer will use it)
+- **`!setdriver`** - Check what your current driver name is
 
 ### Voice Commands
 
