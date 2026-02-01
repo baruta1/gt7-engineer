@@ -889,6 +889,32 @@ async def handle_engineer_flow(vc, driver_user_id):
             purge_old_recordings()
         loop_count += 1
 
+        # Check if gateway reconnected and we need to refresh voice
+        global gateway_reconnected, last_gateway_reconnect
+        if gateway_reconnected and voice_conn and voice_conn != vc:
+            print("🔄 Detected gateway reconnect - switching to refreshed voice connection")
+            vc = voice_conn
+            gateway_reconnected = False
+
+        # Proactively reconnect voice if gateway reconnected recently (within 30s)
+        # This catches cases where on_resumed didn't fire properly
+        if (last_gateway_reconnect > 0
+            and time.time() - last_gateway_reconnect < 30
+            and time.time() - last_gateway_reconnect > 2
+            and not gateway_reconnected):
+            print("🔄 Proactive voice refresh after recent gateway reconnect...")
+            try:
+                ch = vc.channel
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5)
+                vc = await ch.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
+                voice_conn = vc
+                last_gateway_reconnect = 0  # Reset so we don't keep reconnecting
+                print("✅ Proactive voice refresh complete")
+            except Exception as e:
+                print(f"⚠️ Proactive voice refresh failed: {e}")
+                last_gateway_reconnect = 0
+
         t = telemetry.get_latest()
 
         # Compute paused/menu/loading in a null-safe way
@@ -1155,32 +1181,55 @@ async def maybe_announce_fuel(vc):
             break  # avoid multiple alerts in the same cycle
                 
             
-# ─── Bot Commands ──────────────────────────────────────
+# Track gateway state for voice reconnection
+gateway_reconnected = False
+last_gateway_reconnect = 0
 
-@bot.event
-async def on_resumed():
-    """Handle Discord gateway reconnection - refresh voice connection."""
+async def force_voice_reconnect():
+    """Force reconnect voice connection after gateway issues."""
     global voice_conn
-    print("🔄 Discord gateway resumed - checking voice connection...")
-
     if voice_conn and voice_conn.channel:
         try:
-            # Disconnect and reconnect to refresh the voice state
             channel = voice_conn.channel
-            print(f"🔄 Refreshing voice connection to {channel.name}...")
+            print(f"🔄 Force refreshing voice connection to {channel.name}...")
 
             try:
                 await voice_conn.disconnect(force=True)
             except:
                 pass
 
-            await asyncio.sleep(1)  # Brief pause before reconnecting
+            await asyncio.sleep(1)
 
             vc = await channel.connect(cls=voice_recv.VoiceRecvClient, self_deaf=False, self_mute=False)
             voice_conn = vc
             print(f"✅ Voice connection refreshed to {channel.name}")
+            return True
         except Exception as e:
             print(f"⚠️ Failed to refresh voice connection: {e}")
+    return False
+
+
+# ─── Bot Commands ──────────────────────────────────────
+
+@bot.event
+async def on_resumed():
+    """Handle Discord gateway reconnection - refresh voice connection."""
+    global gateway_reconnected, last_gateway_reconnect
+    print("🔄 Discord gateway resumed - will refresh voice connection...")
+    gateway_reconnected = True
+    last_gateway_reconnect = time.time()
+    await force_voice_reconnect()
+
+
+@bot.event
+async def on_connect():
+    """Handle initial connection or reconnection."""
+    global gateway_reconnected, last_gateway_reconnect
+    print("🔌 Discord connected/reconnected")
+    # Only treat as reconnection if we've been running for a bit
+    if last_gateway_reconnect > 0:
+        gateway_reconnected = True
+        last_gateway_reconnect = time.time()
 
 
 @bot.event
