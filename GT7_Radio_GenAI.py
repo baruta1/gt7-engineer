@@ -28,6 +28,7 @@ import os
 import time
 import subprocess
 import random
+import math
 from pathlib import Path
 
 import logging
@@ -183,7 +184,7 @@ consecutive_slow_laps = 0         # Track if driver is struggling
 
 # ─── NEW: Incident Detection ───────────────────────────────
 last_crash_call = 0               # Cooldown for crash announcements
-prev_speeds = []                  # Rolling window of recent speeds
+prev_rotations = []               # Rolling window of car headings for spin detection
 
 # ─── NEW: Driving Style Analysis ───────────────────────────
 tcs_activations = 0               # Count TCS activations per lap
@@ -807,83 +808,113 @@ async def maybe_handle_lap_delta(vc, latest):
         await play_line(vc, msg, "lap_delta")
 
 # ─── NEW: Incident Detection ───────────────────────────────
-# Detect crashes: speed drops significantly OR extreme G-forces
-# Uses GenAI for natural response
+# Detect REAL incidents: car spinning (rotation) or stopped after impact
+# Uses rotation/heading data to detect actual spin-outs
 
-prev_speeds = []  # Rolling window of recent speeds
+prev_rotations = []  # Rolling window of car headings
 last_crash_call = 0
 
+def normalize_angle(angle):
+    """Normalize angle to -180 to 180 range."""
+    while angle > 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
 async def maybe_handle_incident(vc, latest):
-    """Detect crashes - significant speed loss or extreme G-forces."""
-    global prev_speeds, last_crash_call
+    """Detect REAL crashes - car spinning or stopped after high-speed impact."""
+    global prev_rotations, last_crash_call
 
     if not latest or not race_started:
         return
 
+    # Get rotation (heading) - this is what tells us if car is spinning
+    rotation = getattr(latest, 'rotation', None)
+    angular_vel = getattr(latest, 'angular_velocity', None)
     current_speed = latest.speed_mps * 3.6 if latest.speed_mps else 0
-    surge = getattr(latest, 'surge', None)
-    sway = getattr(latest, 'sway', None)
 
-    # Keep rolling window of last 30 speed samples (~1.5 seconds)
-    prev_speeds.append(current_speed)
-    if len(prev_speeds) > 30:
-        prev_speeds.pop(0)
-
-    # Need enough history
-    if len(prev_speeds) < 20:
+    # Skip if no rotation data
+    if rotation is None:
         return
 
-    # 3 minute cooldown between crash calls
+    # Extract yaw (heading) from rotation - it's typically a vector or quaternion
+    # Try to get the yaw component
+    if hasattr(rotation, 'y'):
+        yaw = math.degrees(rotation.y)  # Convert radians to degrees
+    elif isinstance(rotation, (list, tuple)) and len(rotation) >= 2:
+        yaw = math.degrees(rotation[1])
+    else:
+        yaw = float(rotation) if rotation else 0
+
+    # Keep rolling window of rotations (~1.5 seconds)
+    prev_rotations.append({'yaw': yaw, 'speed': current_speed, 'time': time.time()})
+    if len(prev_rotations) > 30:
+        prev_rotations.pop(0)
+
+    # Need enough history
+    if len(prev_rotations) < 20:
+        return
+
+    # 3 minute cooldown
     now = time.time()
     if now - last_crash_call < 180:
         return
 
-    # Calculate speed metrics
-    max_recent_speed = max(prev_speeds[:15])  # Max speed ~0.75s ago
-    current_avg = sum(prev_speeds[-5:]) / 5   # Current average speed
-    speed_drop = max_recent_speed - current_avg
+    # Calculate rotation change over the window
+    old_yaw = prev_rotations[0]['yaw']
+    rotation_change = abs(normalize_angle(yaw - old_yaw))
 
-    # Check G-forces if available
-    extreme_g = False
-    if surge is not None and sway is not None:
-        total_g = (surge**2 + sway**2) ** 0.5
-        extreme_g = total_g > 6.0  # Very high G = definite crash
+    # Also check angular velocity if available (direct spin rate)
+    spin_rate = 0
+    if angular_vel is not None:
+        if hasattr(angular_vel, 'y'):
+            spin_rate = abs(math.degrees(angular_vel.y))
+        elif isinstance(angular_vel, (list, tuple)) and len(angular_vel) >= 2:
+            spin_rate = abs(math.degrees(angular_vel[1]))
 
-    # CRASH DETECTION (any of these):
-    # 1. Was going >60 kph, now <40 kph, dropped >40 kph, not braking hard
-    # 2. Dropped >60 kph quickly regardless of current speed (big hit)
-    # 3. Extreme G-force (>6G) = definite crash
-    is_crash = (
-        # Scenario 1: Slowed way down
-        (max_recent_speed > 60 and current_avg < 40 and speed_drop > 40 and latest.brake < 120) or
-        # Scenario 2: Massive speed loss
-        (speed_drop > 60 and latest.brake < 100) or
-        # Scenario 3: Extreme G-force
-        extreme_g
+    # Check if car was going fast and is now slow (potential crash)
+    max_speed = max(r['speed'] for r in prev_rotations[:15])
+    current_avg_speed = sum(r['speed'] for r in prev_rotations[-5:]) / 5
+    speed_drop = max_speed - current_avg_speed
+
+    # SPIN DETECTION:
+    # 1. Car rotated >90° in ~1.5 seconds = spin-out
+    # 2. High angular velocity (>60°/sec) while at speed = spinning
+    # 3. Car nearly stopped (<15 kph) after being fast (>80 kph) with significant rotation
+    is_spin = (
+        (rotation_change > 90 and max_speed > 40) or  # Rotated 90°+ while moving
+        (spin_rate > 60 and current_speed > 30)  # Spinning fast while moving
     )
 
-    # Debug logging (comment out once tuned)
-    if speed_drop > 30 or (extreme_g):
-        print(f"🔍 Crash check: max={max_recent_speed:.0f}, now={current_avg:.0f}, drop={speed_drop:.0f}, brake={latest.brake}, G={total_g if surge else 'N/A'}")
+    is_crash = (
+        # Stopped/nearly stopped after high speed with some rotation
+        (max_speed > 80 and current_avg_speed < 15 and rotation_change > 30) or
+        # Massive speed drop with rotation (hit wall and spun)
+        (speed_drop > 70 and rotation_change > 45 and latest.brake < 100)
+    )
 
-    if is_crash:
+    # Debug logging
+    if rotation_change > 30 or speed_drop > 40:
+        print(f"🔍 Incident check: rot_change={rotation_change:.0f}°, spin_rate={spin_rate:.0f}°/s, speed_drop={speed_drop:.0f}, speed={current_speed:.0f}")
+
+    if is_spin or is_crash:
         last_crash_call = now
 
-        # Determine severity for prompt
-        if extreme_g or speed_drop > 80:
-            severity = "major crash"
-            concern = "very worried"
+        if is_crash:
+            incident_type = "crashed"
+            severity = "major"
         else:
-            severity = "spin or collision"
-            concern = "concerned"
+            incident_type = "spun out"
+            severity = "spin"
 
-        print(f"💥 CRASH detected! Was {max_recent_speed:.0f} kph, now {current_avg:.0f} kph, drop {speed_drop:.0f} kph")
+        print(f"💥 {severity.upper()} detected! Rotation: {rotation_change:.0f}°, Speed drop: {speed_drop:.0f} kph")
 
-        # Use GenAI for natural, concerned response
+        # Use GenAI for natural response
         prompt = get_main_prompt() + (
-            f" The car just had a {severity} - loss of {speed_drop:.0f} kph. "
-            f"Check on the driver. Sound genuinely {concern}. "
-            f"Ask if they're okay. Keep it under 12 words. Be natural, not scripted."
+            f" The car just {incident_type} - rotated {rotation_change:.0f}° and lost {speed_drop:.0f} kph. "
+            f"{'This looks serious - check if driver is okay with genuine concern.' if is_crash else 'Quick check-in after the spin.'} "
+            f"Keep it under 12 words. Sound natural and caring, not scripted."
         )
         msg = client.chat.completions.create(
             model="gpt-4o",
@@ -1128,7 +1159,7 @@ async def handle_engineer_flow(vc, driver_user_id):
             # Reset new tracking variables
             global initial_tire_radius, tire_wear_announced, last_tire_wear_call
             global last_lap_delta_call, consecutive_slow_laps
-            global last_crash_call, prev_speeds
+            global last_crash_call, prev_rotations
             global tcs_activations, asm_activations, wheelspin_events, lockup_events
             global last_driving_style_call, prev_tcs_state, prev_asm_state
 
@@ -1138,7 +1169,7 @@ async def handle_engineer_flow(vc, driver_user_id):
             last_lap_delta_call = 0
             consecutive_slow_laps = 0
             last_crash_call = 0
-            prev_speeds = []
+            prev_rotations = []
             tcs_activations = asm_activations = wheelspin_events = lockup_events = 0
             last_driving_style_call = 0
             prev_tcs_state = prev_asm_state = False
