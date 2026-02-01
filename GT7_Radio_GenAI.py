@@ -807,56 +807,83 @@ async def maybe_handle_lap_delta(vc, latest):
         await play_line(vc, msg, "lap_delta")
 
 # ─── NEW: Incident Detection ───────────────────────────────
-# Only detect REAL crashes: car goes from high speed to nearly stopped
-# Uses GenAI for natural response (not scripted)
+# Detect crashes: speed drops significantly OR extreme G-forces
+# Uses GenAI for natural response
 
 prev_speeds = []  # Rolling window of recent speeds
 last_crash_call = 0
 
 async def maybe_handle_incident(vc, latest):
-    """Detect REAL crashes only - when car goes from racing speed to nearly stopped."""
+    """Detect crashes - significant speed loss or extreme G-forces."""
     global prev_speeds, last_crash_call
 
     if not latest or not race_started:
         return
 
     current_speed = latest.speed_mps * 3.6 if latest.speed_mps else 0
+    surge = getattr(latest, 'surge', None)
+    sway = getattr(latest, 'sway', None)
 
-    # Keep rolling window of last 20 speed samples (~1 second at 50ms intervals)
+    # Keep rolling window of last 30 speed samples (~1.5 seconds)
     prev_speeds.append(current_speed)
-    if len(prev_speeds) > 20:
+    if len(prev_speeds) > 30:
         prev_speeds.pop(0)
 
     # Need enough history
     if len(prev_speeds) < 20:
         return
 
-    # 5 minute cooldown between crash calls
+    # 3 minute cooldown between crash calls
     now = time.time()
-    if now - last_crash_call < 300:
+    if now - last_crash_call < 180:
         return
 
-    # Detect REAL crash: was going fast, now nearly stopped
-    max_recent_speed = max(prev_speeds[:10])  # Speed ~0.5s ago
-    current_avg = sum(prev_speeds[-5:]) / 5   # Current average
+    # Calculate speed metrics
+    max_recent_speed = max(prev_speeds[:15])  # Max speed ~0.75s ago
+    current_avg = sum(prev_speeds[-5:]) / 5   # Current average speed
+    speed_drop = max_recent_speed - current_avg
 
-    # Crash = was going >80 kph, now below 20 kph (not in braking zone)
+    # Check G-forces if available
+    extreme_g = False
+    if surge is not None and sway is not None:
+        total_g = (surge**2 + sway**2) ** 0.5
+        extreme_g = total_g > 6.0  # Very high G = definite crash
+
+    # CRASH DETECTION (any of these):
+    # 1. Was going >60 kph, now <40 kph, dropped >40 kph, not braking hard
+    # 2. Dropped >60 kph quickly regardless of current speed (big hit)
+    # 3. Extreme G-force (>6G) = definite crash
     is_crash = (
-        max_recent_speed > 80 and
-        current_avg < 20 and
-        latest.brake < 100  # Not heavy braking (rules out normal stops)
+        # Scenario 1: Slowed way down
+        (max_recent_speed > 60 and current_avg < 40 and speed_drop > 40 and latest.brake < 120) or
+        # Scenario 2: Massive speed loss
+        (speed_drop > 60 and latest.brake < 100) or
+        # Scenario 3: Extreme G-force
+        extreme_g
     )
+
+    # Debug logging (comment out once tuned)
+    if speed_drop > 30 or (extreme_g):
+        print(f"🔍 Crash check: max={max_recent_speed:.0f}, now={current_avg:.0f}, drop={speed_drop:.0f}, brake={latest.brake}, G={total_g if surge else 'N/A'}")
 
     if is_crash:
         last_crash_call = now
-        print(f"💥 CRASH detected! Was {max_recent_speed:.0f} kph, now {current_avg:.0f} kph")
+
+        # Determine severity for prompt
+        if extreme_g or speed_drop > 80:
+            severity = "major crash"
+            concern = "very worried"
+        else:
+            severity = "spin or collision"
+            concern = "concerned"
+
+        print(f"💥 CRASH detected! Was {max_recent_speed:.0f} kph, now {current_avg:.0f} kph, drop {speed_drop:.0f} kph")
 
         # Use GenAI for natural, concerned response
         prompt = get_main_prompt() + (
-            f" The car just CRASHED - went from {max_recent_speed:.0f} kph to nearly stopped. "
-            f"This is serious. Check on the driver with genuine concern. "
-            f"Be worried but supportive. Ask if they're okay. Keep it under 15 words. "
-            f"Sound like a real engineer who cares about their driver's safety."
+            f" The car just had a {severity} - loss of {speed_drop:.0f} kph. "
+            f"Check on the driver. Sound genuinely {concern}. "
+            f"Ask if they're okay. Keep it under 12 words. Be natural, not scripted."
         )
         msg = client.chat.completions.create(
             model="gpt-4o",
