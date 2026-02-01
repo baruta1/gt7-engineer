@@ -660,11 +660,19 @@ async def maybe_handle_lap_update(vc, latest):
             f"Give a one or two sentence update. Reference the actual lap time just set if relevant."
         )
 
-    # Check for new best lap
-    if latest and latest.best_lap_time_ms != -1:
-        if prev_best_ms is None or latest.best_lap_time_ms < to_milliseconds(prev_best_ms):
-            prev_best_ms = stats["best_lap_time_ms"]
-            prompt += f" The driver just set a NEW BEST LAP of {prev_best_ms}! Mention this."
+    # Check for new best lap using our recorded history (more reliable than game data)
+    if len(lap_times_history) >= 1:
+        just_completed = lap_times_history[-1]  # The lap we just finished
+        # Check if this is the fastest lap so far
+        if len(lap_times_history) == 1:
+            # First recorded lap is automatically the best
+            prompt += f" The driver just set their first lap time of {just_completed['time_str']}!"
+        else:
+            # Compare to all previous laps (excluding the one just completed)
+            previous_laps = lap_times_history[:-1]
+            previous_best = min(previous_laps, key=lambda x: x['time_ms'])
+            if just_completed['time_ms'] < previous_best['time_ms']:
+                prompt += f" NEW BEST LAP! {just_completed['time_str']} - faster than the previous best of {previous_best['time_str']}! Mention this."
     summary = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "system", "content": prompt}]
@@ -814,16 +822,16 @@ async def maybe_handle_incident(vc, latest):
     if surge is None or sway is None:
         return
 
-    # 45 second cooldown between incident calls
-    if time.time() - last_incident_call < 45:
+    # 3 minute cooldown between incident calls (avoid spam)
+    if time.time() - last_incident_call < 180:
         return
 
     # Calculate total G-force magnitude
     total_g = (surge**2 + sway**2) ** 0.5
 
     # Detect significant lateral G (big slide or impact)
-    # Thresholds tuned for notable events only
-    if abs(sway) > 2.5:  # Big lateral hit or slide
+    # Higher thresholds to only catch real incidents, not normal racing
+    if abs(sway) > 3.5:  # Big lateral hit or slide (raised from 2.5)
         last_incident_call = time.time()
         prompt = get_main_prompt() + (
             f" The car just had a significant lateral load - possibly a slide or contact. "
@@ -834,9 +842,9 @@ async def maybe_handle_incident(vc, latest):
             messages=[{"role": "system", "content": prompt}]
         ).choices[0].message.content
         await play_line(vc, msg, "incident_lateral")
-    elif abs(surge) > 3.0:  # Big decel - hard braking or impact
+    elif abs(surge) > 4.0:  # Big decel - hard braking or impact (raised from 3.0)
         # Only flag if unexpected (could be normal hard braking zone)
-        if latest.brake < 200:  # Not heavy braking, so likely an impact
+        if latest.brake < 150:  # Not heavy braking, so likely an impact
             last_incident_call = time.time()
             prompt = get_main_prompt() + (
                 f" Car experienced sudden deceleration without heavy braking - possible contact. "
