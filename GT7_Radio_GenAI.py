@@ -568,9 +568,10 @@ async def maybe_handle_lap_update(vc, latest):
     if lap is None or lap == 1:
         return
 
-    # Guard against telemetry reset (lap going backwards or to 0)
-    if lap == 0 or total == 0:
-        print(f"⚠️ Ignoring invalid lap data: lap={lap}, total={total}")
+    # Guard against telemetry reset (lap going backwards or to 0 during a race)
+    # But allow lap > 0 when total == 0 (time-based/endurance race)
+    if lap == 0:
+        print(f"⚠️ Ignoring lap=0 (race not started or reset)")
         return
 
     if prev_lap is not None and lap < prev_lap:
@@ -580,13 +581,28 @@ async def maybe_handle_lap_update(vc, latest):
     if lap == prev_lap:
         return
 
-    print(f"🏎️ LAP CHANGE: {prev_lap} -> {lap} (of {total}) - generating update...")
+    # Determine race type
+    is_timed_race = (total == 0)  # Endurance/time-based race
+
+    if is_timed_race:
+        print(f"🏎️ LAP CHANGE: {prev_lap} -> {lap} (timed race) - generating update...")
+    else:
+        print(f"🏎️ LAP CHANGE: {prev_lap} -> {lap} (of {total}) - generating update...")
+
     stats = latest_telemetry_data()
 
     # Determine lap context
     laps_remaining = total - lap if total > 0 else 0
 
-    if total > 0 and lap > total:
+    if is_timed_race:
+        # Time-based/endurance race - no fixed lap count
+        prompt = get_main_prompt() + (
+            f" The car stats are: {stats}. "
+            f"This is a timed/endurance race (no fixed lap count). We just completed lap {lap}. "
+            f"Give a one or two sentence update about position, pace, fuel, and tires. "
+            f"Don't mention 'laps remaining' since this is a timed race."
+        )
+    elif total > 0 and lap > total:
         # Race finished (crossed line on final lap)
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
