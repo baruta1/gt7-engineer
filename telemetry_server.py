@@ -19,7 +19,8 @@ class TelemetryServer:
 
     def start(self):
         try:
-            self.tc = TurismoClient(ps_ip=self.ps5_ip)
+            # Use heartbeat_type='B' for extended data including G-forces (surge, sway, heave)
+            self.tc = TurismoClient(ps_ip=self.ps5_ip, heartbeat_type='B')
             self.tc.start()
             print(f"✅ Telemetry started (connected to {self.ps5_ip}).")
         except PlayStationOnStandbyError:

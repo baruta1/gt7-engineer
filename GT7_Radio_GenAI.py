@@ -164,6 +164,7 @@ last_fuel_alert = 100
 prev_position = None          # for overtake detection
 last_pos_call = 0             # throttle radio spam (seconds)
 prev_best_ms  = None          # track best‑lap improvement
+lap_times_history = []        # store all lap times: [(lap_num, time_ms, time_str), ...]
 race_started = False    # becomes True on on_race_start
 radio_paused = True     # start muted until race actually begins
 voice_conn   = None     # populated once we have the Discord VC
@@ -555,8 +556,7 @@ async def maybe_handle_overtake(vc, latest):
     
 # ─── helper for lap updates ───────────────────────────────
 async def maybe_handle_lap_update(vc, latest):
-    global prev_lap
-    global prev_best_ms
+    global prev_lap, prev_best_ms, lap_times_history
 
     if not latest:
         return
@@ -581,6 +581,18 @@ async def maybe_handle_lap_update(vc, latest):
     if lap == prev_lap:
         return
 
+    # Record the completed lap time (lap-1 just finished)
+    completed_lap = lap - 1
+    last_lap_ms = latest.last_lap_time_ms
+    if last_lap_ms and last_lap_ms > 0:
+        last_lap_str = ms_to_min_sec(last_lap_ms)
+        lap_times_history.append({
+            'lap': completed_lap,
+            'time_ms': last_lap_ms,
+            'time_str': last_lap_str
+        })
+        print(f"📝 Recorded lap {completed_lap}: {last_lap_str}")
+
     # Determine race type
     is_timed_race = (total == 0)  # Endurance/time-based race
 
@@ -591,6 +603,18 @@ async def maybe_handle_lap_update(vc, latest):
 
     stats = latest_telemetry_data()
 
+    # Build lap history string for context
+    if lap_times_history:
+        history_str = "Lap times so far: " + ", ".join(
+            [f"Lap {lt['lap']}: {lt['time_str']}" for lt in lap_times_history]
+        )
+        # Find fastest and slowest
+        fastest = min(lap_times_history, key=lambda x: x['time_ms'])
+        slowest = max(lap_times_history, key=lambda x: x['time_ms'])
+        history_str += f". Fastest: Lap {fastest['lap']} ({fastest['time_str']}). Slowest: Lap {slowest['lap']} ({slowest['time_str']})."
+    else:
+        history_str = "No lap times recorded yet."
+
     # Determine lap context
     laps_remaining = total - lap if total > 0 else 0
 
@@ -598,14 +622,16 @@ async def maybe_handle_lap_update(vc, latest):
         # Time-based/endurance race - no fixed lap count
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
-            f"This is a timed/endurance race (no fixed lap count). We just completed lap {lap}. "
+            f"{history_str} "
+            f"This is a timed/endurance race (no fixed lap count). We just completed lap {completed_lap} and are now on lap {lap}. "
             f"Give a one or two sentence update about position, pace, fuel, and tires. "
-            f"Don't mention 'laps remaining' since this is a timed race."
+            f"Reference the actual lap time just completed if relevant. Don't mention 'laps remaining' since this is a timed race."
         )
     elif total > 0 and lap > total:
         # Race finished (crossed line on final lap)
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
+            f"{history_str} "
             f"The race just FINISHED! Congratulate the driver. "
             f"Give a super-short celebratory message about their final position."
         )
@@ -613,6 +639,7 @@ async def maybe_handle_lap_update(vc, latest):
         # LAST LAP - make it clear!
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
+            f"{history_str} "
             f"This is the FINAL LAP! Lap {lap} of {total}. "
             f"Give an urgent, short message - push to the end! Mention it's the last lap."
         )
@@ -620,21 +647,24 @@ async def maybe_handle_lap_update(vc, latest):
         # Second to last lap
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
+            f"{history_str} "
             f"Lap {lap} of {total} - just ONE lap to go after this! "
-            f"Give a short update, mention there's one lap remaining."
+            f"Give a short update, mention there's one lap remaining. Reference the actual lap time if relevant."
         )
     else:
         # Normal lap update
         prompt = get_main_prompt() + (
             f" The car stats are: {stats}. "
+            f"{history_str} "
             f"We're on lap {lap} of {total} ({laps_remaining} laps remaining). "
-            f"Give a one or two sentence update."
+            f"Give a one or two sentence update. Reference the actual lap time just set if relevant."
         )
+
+    # Check for new best lap
     if latest and latest.best_lap_time_ms != -1:
-        if prev_best_ms is None or latest.best_lap_time_ms < to_milliseconds( prev_best_ms):
+        if prev_best_ms is None or latest.best_lap_time_ms < to_milliseconds(prev_best_ms):
             prev_best_ms = stats["best_lap_time_ms"]
-            stats = latest_telemetry_data()
-            prompt += f" And please tell the driver they just set a new best lap of {prev_best_ms} ms. "
+            prompt += f" The driver just set a NEW BEST LAP of {prev_best_ms}! Mention this."
     summary = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "system", "content": prompt}]
@@ -1046,6 +1076,10 @@ async def handle_engineer_flow(vc, driver_user_id):
             prev_lap = prev_position = prev_best_ms = None
             last_fuel_alert = 100
             announced_fuel_levels.clear()
+
+            # Reset lap times history
+            global lap_times_history
+            lap_times_history = []
 
             # Reset new tracking variables
             global initial_tire_radius, tire_wear_announced, last_tire_wear_call
