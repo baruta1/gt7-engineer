@@ -885,12 +885,11 @@ async def maybe_handle_incident(vc, latest):
         (rotation_change > 150)  # Almost backwards = definite spin
     )
 
-    # CRASH DETECTION - nearly stopped after high speed:
-    # 1. Massive speed drop (>150 kph) to near-stop (<25 kph) = definite crash
-    # 2. Was >100, now <20, rotation >50°, not braking hard
+    # CRASH DETECTION - ended up nearly STOPPED after going fast:
+    # Key insight: normal chicane = slow to 60-80 kph, crash = nearly stopped (<20 kph)
+    # Nearly stopped (<20 kph) + dropped >80 kph + some rotation (>=35°) + not braking hard
     is_crash = (
-        (speed_drop > 150 and current_avg_speed < 25) or  # Massive decel = crash
-        (max_speed > 100 and current_avg_speed < 20 and rotation_change > 50 and latest.brake < 80)
+        current_avg_speed < 20 and speed_drop > 80 and rotation_change >= 35 and latest.brake < 100
     )
 
     # Debug logging - only log potential incidents
